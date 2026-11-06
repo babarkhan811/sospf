@@ -17,10 +17,10 @@ import (
 // MediationRequest is the gateway input (draft-yang -02 §8). The -01 alias is
 // documented in doc comments; the -02 names are primary.
 type MediationRequest struct {
-	Intent     semantic.IntentVector      // Goal + Context
-	Tenant     string                     // Policy Scope: tenant
-	Candidates []*semantic.Candidate      // Registered Capability Profiles + live metrics
-	Validated  map[semantic.AgentID]bool  // Trust Binding: which claims are signature-verified
+	Intent     semantic.IntentVector     // Goal + Context
+	Tenant     string                    // Policy Scope: tenant
+	Candidates []*semantic.Candidate     // Registered Capability Profiles + live metrics
+	Validated  map[semantic.AgentID]bool // Trust Binding: which claims are signature-verified
 }
 
 // MediationResponse is the primary decision artifact (§10.1; -01: Resolution

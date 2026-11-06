@@ -14,11 +14,11 @@ import (
 
 // Params configure the trust model.
 type Params struct {
-	Alpha         float64       // EWMA weight on the newest sample (0..1)
-	NewAgentFloor float64       // starting trust for an unseen agent
-	AnomalyPenalty float64      // subtracted from a sample when an anomaly is flagged
-	DecayHalfLife time.Duration // trust decays toward the floor with this half-life
-	ReOriginDelta float64       // |new-old| above this re-originates a Trust LSA
+	Alpha          float64       // EWMA weight on the newest sample (0..1)
+	NewAgentFloor  float64       // starting trust for an unseen agent
+	AnomalyPenalty float64       // subtracted from a sample when an anomaly is flagged
+	DecayHalfLife  time.Duration // trust decays toward the floor with this half-life
+	ReOriginDelta  float64       // |new-old| above this re-originates a Trust LSA
 }
 
 // DefaultParams returns conservative defaults.
@@ -55,8 +55,8 @@ func (p Params) sample(o Outcome) float64 {
 }
 
 type state struct {
-	score    float64
-	lastSeen time.Time
+	score      float64
+	lastSeen   time.Time
 	advertised float64 // last value put into a Trust LSA
 }
 

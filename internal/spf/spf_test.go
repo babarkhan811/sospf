@@ -54,6 +54,38 @@ func TestOneWayLinkIsIgnored(t *testing.T) {
 	}
 }
 
+// 1-2:1, 1-3:1, 2-4:1, 3-4:2. Primary 1->4 is via 2 (cost 2); router 3 is a
+// loop-free backup (dist(3,4)=2 < dist(3,1)=1 + dist(1,4)=2).
+func TestComputeWithBackupFindsLFA(t *testing.T) {
+	g := BuildGraph([]*packet.RouterLSA{
+		rtr(1, p2p(2, 1), p2p(3, 1)),
+		rtr(2, p2p(1, 1), p2p(4, 1)),
+		rtr(3, p2p(1, 1), p2p(4, 2)),
+		rtr(4, p2p(2, 1), p2p(3, 2)),
+	})
+	prot := ComputeWithBackup(1, g)
+	p := prot[Dest{DestRouter, 4}]
+	if p.Primary.NextHop != 2 || p.Primary.Cost != 2 {
+		t.Fatalf("primary to 4: got %+v want nh2 cost2", p.Primary)
+	}
+	if !p.HasBackup || p.Backup.NextHop != 3 {
+		t.Fatalf("expected loop-free backup via 3, got %+v", p)
+	}
+}
+
+// A single path has no loop-free alternate.
+func TestComputeWithBackupNoAlternate(t *testing.T) {
+	g := BuildGraph([]*packet.RouterLSA{
+		rtr(1, p2p(2, 1)),
+		rtr(2, p2p(1, 1), p2p(3, 1)),
+		rtr(3, p2p(2, 1)),
+	})
+	prot := ComputeWithBackup(1, g)
+	if p := prot[Dest{DestRouter, 3}]; p.HasBackup {
+		t.Errorf("single-path dest 3 should have no backup, got %+v", p)
+	}
+}
+
 func TestReconvergeAfterMetricChange(t *testing.T) {
 	// After 2-3 is gone, 1 reaches 3 only via the direct cost-5 link.
 	g := BuildGraph([]*packet.RouterLSA{

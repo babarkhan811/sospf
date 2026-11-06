@@ -12,10 +12,10 @@ package linkmetric
 
 // Weights control how much telemetry influences the cost.
 type Weights struct {
-	Alpha      float64 // EWMA weight on the newest sample (0..1)
-	PerMs      float64 // cost units added per millisecond of smoothed latency
-	PerLoad    float64 // cost units added at full load (load in [0,1])
-	Band       uint16  // minimum change from the advertised cost to re-advertise
+	Alpha   float64 // EWMA weight on the newest sample (0..1)
+	PerMs   float64 // cost units added per millisecond of smoothed latency
+	PerLoad float64 // cost units added at full load (load in [0,1])
+	Band    uint16  // minimum change from the advertised cost to re-advertise
 }
 
 // DefaultWeights is a balanced, flap-resistant starting point.

@@ -48,12 +48,12 @@ func (s State) String() string {
 type Event int
 
 const (
-	HelloReceived Event = iota
-	TwoWayReceived      // our own Router ID seen in the neighbor's Hello
-	NegotiationDone     // master/slave and DD seq agreed
-	ExchangeDone        // both sides finished sending DD summaries
-	LoadingDone         // request list drained
-	AdjOK               // decided to form an adjacency
+	HelloReceived   Event = iota
+	TwoWayReceived        // our own Router ID seen in the neighbor's Hello
+	NegotiationDone       // master/slave and DD seq agreed
+	ExchangeDone          // both sides finished sending DD summaries
+	LoadingDone           // request list drained
+	AdjOK                 // decided to form an adjacency
 	SeqNumMismatch
 	KillNbr // Dead timer fired / link down
 )

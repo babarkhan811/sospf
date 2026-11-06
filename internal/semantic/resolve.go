@@ -81,7 +81,7 @@ func (r *Resolver) Resolve(iv IntentVector, cands []*Candidate) Decision {
 	dec := Decision{Reason: ReasonNone, ExpiresAt: now.Add(r.TTL)}
 
 	var (
-		eligible                                          []Ranked
+		eligible                                               []Ranked
 		nCapMismatch, nTrust, nPolicy, nIndeterminate, nStatus int
 	)
 

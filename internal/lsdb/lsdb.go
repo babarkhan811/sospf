@@ -54,8 +54,8 @@ func Compare(a, b packet.LSAHeader) Cmp {
 }
 
 type entry struct {
-	lsa      *packet.RouterLSA
-	arrived  time.Time // for age accounting
+	lsa     *packet.RouterLSA
+	arrived time.Time // for age accounting
 }
 
 // DB is a link-state database. It is safe for concurrent use.

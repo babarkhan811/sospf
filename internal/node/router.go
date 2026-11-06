@@ -45,18 +45,21 @@ func DefaultConfig() Config {
 }
 
 type neighbor struct {
-	id         uint32
-	cost       uint16 // current (possibly telemetry-adjusted) link metric
-	metric     *linkmetric.Metric
-	measLat    float64 // last injected latency sample (ms)
-	measLoad   float64 // last injected load sample [0,1]
-	state      fsm.State
-	lastHeard  time.Time
-	heardMe    bool
-	master     bool
-	ddSummSent bool // have we sent our DB summary to this neighbor this round?
-	ddRecvd    bool // have we received the neighbor's DB summary this round?
-	reqList    map[packet.Key]bool
+	id            uint32
+	cost          uint16 // current (possibly telemetry-adjusted) link metric
+	baseCost      uint16 // static admin cost
+	metric        *linkmetric.Metric
+	measLat       float64 // last injected latency sample (ms)
+	measLoad      float64 // last injected load sample [0,1]
+	degrading     bool    // effective predictive health (telemetry OR manual)
+	manualDegrade bool    // explicit health override via InjectHealth
+	state         fsm.State
+	lastHeard     time.Time
+	heardMe       bool
+	master        bool
+	ddSummSent    bool // have we sent our DB summary to this neighbor this round?
+	ddRecvd       bool // have we received the neighbor's DB summary this round?
+	reqList       map[packet.Key]bool
 }
 
 type envelope struct {
@@ -70,8 +73,8 @@ type Router struct {
 	Area uint32
 	cfg  Config
 
-	send     func(to uint32, msg any) // installed by the transport
-	inbox    chan envelope            // core routing messages (high priority)
+	send     func(to uint32, msg any)   // installed by the transport
+	inbox    chan envelope              // core routing messages (high priority)
 	semInbox chan packet.SemanticUpdate // semantic updates (low priority, budgeted)
 
 	semDB        map[semKey]int32 // latest seq per semantic LSA (dampens re-floods)
@@ -83,7 +86,8 @@ type Router struct {
 	selfSeq   int32
 
 	mu       sync.RWMutex
-	table    map[spf.Dest]spf.Route
+	table    map[spf.Dest]spf.Route // primary routes
+	effTable map[spf.Dest]spf.Route // effective routes (backup applied for degrading next hops)
 	dirty    bool
 	syncTick int
 
@@ -128,12 +132,26 @@ type semKey struct {
 // effective cost around it (idea #1).
 func (r *Router) AddLink(id uint32, metric uint16) {
 	r.neighbors[id] = &neighbor{
-		id:      id,
-		cost:    metric,
-		metric:  linkmetric.New(metric, linkmetric.DefaultWeights()),
-		state:   fsm.Down,
-		reqList: map[packet.Key]bool{},
+		id:       id,
+		cost:     metric,
+		baseCost: metric,
+		metric:   linkmetric.New(metric, linkmetric.DefaultWeights()),
+		state:    fsm.Down,
+		reqList:  map[packet.Key]bool{},
 	}
+}
+
+// InjectHealth marks the link to neighbor id as degrading (or healthy). It is a
+// predictive signal — set before a link/agent fully fails — that triggers an
+// instant local switch to the precomputed backup next hop (idea #2), without
+// waiting for the dead timer or a reconvergence.
+func (r *Router) InjectHealth(neighbor uint32, degrading bool) {
+	r.inbox <- envelope{from: 0, msg: healthSample{neighbor: neighbor, degrading: degrading}}
+}
+
+type healthSample struct {
+	neighbor  uint32
+	degrading bool
 }
 
 // InjectTelemetry feeds a latency/load sample for the link to neighbor id. It is
@@ -317,6 +335,11 @@ func (r *Router) handle(e envelope) {
 			n.measLat = m.lat
 			n.measLoad = m.load
 		}
+	case healthSample:
+		if n := r.neighbors[m.neighbor]; n != nil && n.manualDegrade != m.degrading {
+			n.manualDegrade = m.degrading
+			r.dirty = true // folded into n.degrading on the next maint tick
+		}
 	}
 }
 
@@ -333,6 +356,16 @@ func (r *Router) recomputeMetrics() {
 		if eff, ch := n.metric.Observe(n.measLat, n.measLoad); ch {
 			n.cost = eff
 			changed = true
+		}
+		// Predictive health: a link whose effective cost has climbed well above
+		// its base, or that is heavily loaded, is degrading — combined with any
+		// explicit override — so routes fail over to their backup before it dies
+		// (idea #2).
+		telemetryDegrade := float64(n.cost) >= float64(n.baseCost)*1.8 || n.measLoad >= 0.8
+		degrading := telemetryDegrade || n.manualDegrade
+		if degrading != n.degrading {
+			n.degrading = degrading
+			r.dirty = true
 		}
 	}
 	if changed {
@@ -532,18 +565,54 @@ func (r *Router) dbHeaders() []packet.LSAHeader {
 
 func (r *Router) recompute() {
 	g := spf.BuildGraph(r.db.All(time.Now()))
-	t := spf.Compute(r.ID, g)
+	prot := spf.ComputeWithBackup(r.ID, g)
+
+	primary := make(map[spf.Dest]spf.Route, len(prot))
+	eff := make(map[spf.Dest]spf.Route, len(prot))
+	for d, p := range prot {
+		primary[d] = p.Primary
+		// If the primary next hop is a neighbor we predict is failing, and a
+		// loop-free backup exists, use the backup now — instant local failover.
+		if p.HasBackup && r.isDegrading(p.Primary.NextHop) {
+			eff[d] = p.Backup
+		} else {
+			eff[d] = p.Primary
+		}
+	}
 	r.mu.Lock()
-	r.table = t
+	r.table = primary
+	r.effTable = eff
 	r.mu.Unlock()
 }
 
-// Table returns a snapshot of the routing table.
+// isDegrading reports whether the neighbor with the given Router ID is currently
+// flagged as degrading. Called only from the router goroutine.
+func (r *Router) isDegrading(nh uint32) bool {
+	if n := r.neighbors[nh]; n != nil {
+		return n.degrading
+	}
+	return false
+}
+
+// Table returns a snapshot of the primary routing table.
 func (r *Router) Table() map[spf.Dest]spf.Route {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	out := make(map[spf.Dest]spf.Route, len(r.table))
 	for k, v := range r.table {
+		out[k] = v
+	}
+	return out
+}
+
+// EffectiveTable returns the table actually used for forwarding: identical to
+// Table, except destinations whose primary next hop is a degrading neighbor use
+// their precomputed loop-free backup (idea #2, instant local failover).
+func (r *Router) EffectiveTable() map[spf.Dest]spf.Route {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[spf.Dest]spf.Route, len(r.effTable))
+	for k, v := range r.effTable {
 		out[k] = v
 	}
 	return out
