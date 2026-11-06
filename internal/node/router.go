@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/babarkhan811/sospf/internal/fsm"
+	"github.com/babarkhan811/sospf/internal/linkmetric"
 	"github.com/babarkhan811/sospf/internal/lsdb"
 	"github.com/babarkhan811/sospf/internal/packet"
 	"github.com/babarkhan811/sospf/internal/spf"
@@ -45,7 +46,10 @@ func DefaultConfig() Config {
 
 type neighbor struct {
 	id         uint32
-	cost       uint16
+	cost       uint16 // current (possibly telemetry-adjusted) link metric
+	metric     *linkmetric.Metric
+	measLat    float64 // last injected latency sample (ms)
+	measLoad   float64 // last injected load sample [0,1]
 	state      fsm.State
 	lastHeard  time.Time
 	heardMe    bool
@@ -119,9 +123,32 @@ type semKey struct {
 	opaqueID   uint32
 }
 
-// AddLink configures a point-to-point link to neighbor id with the given metric.
+// AddLink configures a point-to-point link to neighbor id with the given base
+// metric. The base is the static admin cost; live telemetry adjusts the
+// effective cost around it (idea #1).
 func (r *Router) AddLink(id uint32, metric uint16) {
-	r.neighbors[id] = &neighbor{id: id, cost: metric, state: fsm.Down, reqList: map[packet.Key]bool{}}
+	r.neighbors[id] = &neighbor{
+		id:      id,
+		cost:    metric,
+		metric:  linkmetric.New(metric, linkmetric.DefaultWeights()),
+		state:   fsm.Down,
+		reqList: map[packet.Key]bool{},
+	}
+}
+
+// InjectTelemetry feeds a latency/load sample for the link to neighbor id. It is
+// how the transport/emulator reports live link conditions; the sample is applied
+// on the router's own goroutine (no data race) and folded into the dynamic
+// metric on the next maintenance tick.
+func (r *Router) InjectTelemetry(neighbor uint32, latencyMs, load float64) {
+	r.inbox <- envelope{from: 0, msg: telemetrySample{neighbor: neighbor, lat: latencyMs, load: load}}
+}
+
+// telemetrySample is an internal control message carrying a link measurement.
+type telemetrySample struct {
+	neighbor uint32
+	lat      float64
+	load     float64
 }
 
 // SetSend installs the transport's send function.
@@ -176,6 +203,7 @@ func (r *Router) Start(ctx context.Context) {
 				r.sendHellos()
 			case <-maint.C:
 				r.checkDead()
+				r.recomputeMetrics() // telemetry-driven dynamic link costs (idea #1)
 				r.syncTick++
 				if r.syncTick%20 == 0 {
 					r.antiEntropy() // periodic full-LSDB sync closes any flooding gap
@@ -284,6 +312,31 @@ func (r *Router) handle(e envelope) {
 		// Phase 2 emulator delivery is reliable, so no retransmission list is
 		// kept; acks are accepted and ignored. Retransmission arrives with the
 		// lossy UDP/raw transports.
+	case telemetrySample:
+		if n := r.neighbors[m.neighbor]; n != nil {
+			n.measLat = m.lat
+			n.measLoad = m.load
+		}
+	}
+}
+
+// recomputeMetrics folds the latest telemetry into each link's dynamic cost. If
+// any link's advertised cost crosses its hysteresis band, the router re-
+// originates its Router LSA so SPF everywhere adapts to live conditions — the
+// damped, flap-resistant feedback of idea #1.
+func (r *Router) recomputeMetrics() {
+	changed := false
+	for _, n := range r.neighbors {
+		if n.metric == nil {
+			continue
+		}
+		if eff, ch := n.metric.Observe(n.measLat, n.measLoad); ch {
+			n.cost = eff
+			changed = true
+		}
+	}
+	if changed {
+		r.originate()
 	}
 }
 

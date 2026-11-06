@@ -75,6 +75,20 @@ func (e *Emulator) SetLinkUp(a, b uint32, up bool) {
 	e.mu.Unlock()
 }
 
+// SetLinkTelemetry reports live latency (ms) and load [0,1] on the a<->b link to
+// both endpoints, feeding each router's dynamic-metric engine (idea #1).
+func (e *Emulator) SetLinkTelemetry(a, b uint32, latencyMs, load float64) {
+	e.mu.RLock()
+	ra, rb := e.routers[a], e.routers[b]
+	e.mu.RUnlock()
+	if ra != nil {
+		ra.InjectTelemetry(b, latencyMs, load)
+	}
+	if rb != nil {
+		rb.InjectTelemetry(a, latencyMs, load)
+	}
+}
+
 func (e *Emulator) route(from, to uint32, msg any) {
 	e.mu.RLock()
 	up := e.links[mk(from, to)]
