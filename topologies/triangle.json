@@ -1,0 +1,12 @@
+{
+  "routers": [
+    { "id": 1, "area": 0, "prefix": 16843008, "metric": 1 },
+    { "id": 2, "area": 0, "prefix": 16843264, "metric": 1 },
+    { "id": 3, "area": 0, "prefix": 16843520, "metric": 1 }
+  ],
+  "links": [
+    { "a": 1, "b": 2, "metric": 1 },
+    { "a": 2, "b": 3, "metric": 1 },
+    { "a": 1, "b": 3, "metric": 5 }
+  ]
+}
