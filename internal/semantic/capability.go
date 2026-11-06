@@ -60,6 +60,12 @@ type CapabilityLSA struct {
 	Digest       []byte
 	FetchHint    string
 	Endpoints    []Endpoint
+
+	// Embedding is an optional compact vector used only as a matching fallback
+	// (brief §5.4). It is a local/fetched attribute; inline wire encoding is the
+	// size-capped option deferred per WIRE_FORMAT §10 Q2, so it is not carried by
+	// Encode/Decode in this phase.
+	Embedding []float32
 }
 
 var errBadCapability = errors.New("semantic: malformed Agent Capability LSA")

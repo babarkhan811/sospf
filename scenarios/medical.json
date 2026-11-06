@@ -1,0 +1,34 @@
+{
+  "intent": {
+    "task_type_iri": "ont:image-segmentation",
+    "domain": "medical",
+    "required_capabilities": ["ont:image-segmentation"],
+    "max_latency_ms": 50,
+    "min_trust": 0.70,
+    "allowed_domains": ["medical"],
+    "disclosure_limit": 2
+  },
+  "subclasses": { "ont:ct-segmentation": ["ont:image-segmentation"] },
+  "agents": [
+    { "agent_id": "seg-trusted",  "prefix": "medical/imaging/segmentation/seg-trusted",
+      "domain": "medical", "status": 0, "disclosure": 1,
+      "capabilities": ["ont:image-segmentation"], "trust": 0.93,
+      "igp_cost": 2, "latency_ms": 20, "load": 0.2, "next_hop": 2 },
+    { "agent_id": "seg-fast-lowtrust", "prefix": "medical/imaging/segmentation/seg-fast",
+      "domain": "medical", "status": 0, "disclosure": 1,
+      "capabilities": ["ont:image-segmentation"], "trust": 0.55,
+      "igp_cost": 1, "latency_ms": 5, "load": 0.1, "next_hop": 3 },
+    { "agent_id": "ct-subclass", "prefix": "medical/imaging/segmentation/ct-1",
+      "domain": "medical", "status": 0, "disclosure": 1,
+      "capabilities": ["ont:ct-segmentation"], "trust": 0.80,
+      "igp_cost": 3, "latency_ms": 30, "load": 0.3, "next_hop": 2 },
+    { "agent_id": "ocr-wrongcap", "prefix": "medical/ocr/ocr-9",
+      "domain": "medical", "status": 0, "disclosure": 1,
+      "capabilities": ["ont:ocr"], "trust": 0.99,
+      "igp_cost": 1, "latency_ms": 5, "load": 0.1, "next_hop": 3 },
+    { "agent_id": "leaky-highdisclosure", "prefix": "medical/imaging/segmentation/leaky",
+      "domain": "medical", "status": 0, "disclosure": 3,
+      "capabilities": ["ont:image-segmentation"], "trust": 0.99,
+      "igp_cost": 1, "latency_ms": 5, "load": 0.1, "next_hop": 3 }
+  ]
+}
