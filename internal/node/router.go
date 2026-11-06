@@ -7,6 +7,7 @@ package node
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/babarkhan811/sospf/internal/fsm"
@@ -20,6 +21,11 @@ type Config struct {
 	HelloInterval time.Duration
 	DeadInterval  time.Duration
 	InboxCap      int
+	// SemanticBudget caps how many semantic updates are processed per scheduling
+	// cycle, so a flood of agent/trust updates can never monopolise the router
+	// and delay core routing (ADR-0005).
+	SemanticBudget int
+	SemInboxCap    int
 }
 
 // DefaultConfig returns emulator-friendly timers.
@@ -28,7 +34,13 @@ func DefaultConfig() Config {
 	// transient processing lag under a flooding storm does not trip a false
 	// dead-neighbor detection (which would churn re-origination and prevent
 	// convergence at scale).
-	return Config{HelloInterval: 15 * time.Millisecond, DeadInterval: 1000 * time.Millisecond, InboxCap: 65536}
+	return Config{
+		HelloInterval:  15 * time.Millisecond,
+		DeadInterval:   1000 * time.Millisecond,
+		InboxCap:       65536,
+		SemanticBudget: 256,
+		SemInboxCap:    1 << 20,
+	}
 }
 
 type neighbor struct {
@@ -54,8 +66,12 @@ type Router struct {
 	Area uint32
 	cfg  Config
 
-	send  func(to uint32, msg any) // installed by the transport
-	inbox chan envelope
+	send     func(to uint32, msg any) // installed by the transport
+	inbox    chan envelope            // core routing messages (high priority)
+	semInbox chan packet.SemanticUpdate // semantic updates (low priority, budgeted)
+
+	semDB        map[semKey]int32 // latest seq per semantic LSA (dampens re-floods)
+	semProcessed uint64           // atomic: semantic updates applied
 
 	neighbors map[uint32]*neighbor
 	stubs     []packet.RouterLink
@@ -75,17 +91,32 @@ func NewRouter(id, area uint32, cfg Config, stubs []packet.RouterLink) *Router {
 	if cfg.InboxCap <= 0 {
 		cfg.InboxCap = 8192
 	}
+	if cfg.SemInboxCap <= 0 {
+		cfg.SemInboxCap = 1 << 20
+	}
+	if cfg.SemanticBudget <= 0 {
+		cfg.SemanticBudget = 256
+	}
 	return &Router{
 		ID:        id,
 		Area:      area,
 		cfg:       cfg,
 		inbox:     make(chan envelope, cfg.InboxCap),
+		semInbox:  make(chan packet.SemanticUpdate, cfg.SemInboxCap),
+		semDB:     make(map[semKey]int32),
 		neighbors: make(map[uint32]*neighbor),
 		stubs:     stubs,
 		db:        lsdb.New(),
 		selfSeq:   packet.InitialSeqNum - 1,
 		table:     map[spf.Dest]spf.Route{},
 	}
+}
+
+// semKey identifies a semantic Opaque LSA for dampening.
+type semKey struct {
+	opaqueType uint8
+	advRouter  uint32
+	opaqueID   uint32
 }
 
 // AddLink configures a point-to-point link to neighbor id with the given metric.
@@ -101,6 +132,16 @@ func (r *Router) SetSend(f func(to uint32, msg any)) { r.send = f }
 // send on a short-lived goroutine, so two routers flooding to each other can
 // never deadlock. Reordering is acceptable — OSPF flooding tolerates it.
 func (r *Router) Deliver(from uint32, msg any) {
+	// Semantic updates go to the low-priority queue; everything else is core
+	// routing and goes to the high-priority queue.
+	if su, ok := msg.(packet.SemanticUpdate); ok {
+		select {
+		case r.semInbox <- su:
+		default: // queue full: drop. Semantics are soft-state and re-synced by
+			// periodic anti-entropy, so dropping under overload protects core routing.
+		}
+		return
+	}
 	e := envelope{from: from, msg: msg}
 	select {
 	case r.inbox <- e:
@@ -121,11 +162,16 @@ func (r *Router) Start(ctx context.Context) {
 		defer hello.Stop()
 		defer maint.Stop()
 		for {
+			// Core routing is strictly higher priority than semantic work: every
+			// cycle drains all pending core messages first, then processes at most
+			// SemanticBudget semantic updates (ADR-0005). So a flood of agent/trust
+			// updates can delay neither adjacency maintenance nor IP convergence.
 			select {
 			case <-ctx.Done():
 				return
 			case e := <-r.inbox:
-				r.handle(e) // sets r.dirty; SPF is debounced to the maint tick
+				r.handle(e)
+				r.drainCore()
 			case <-hello.C:
 				r.sendHellos()
 			case <-maint.C:
@@ -138,10 +184,67 @@ func (r *Router) Start(ctx context.Context) {
 					r.recompute() // at most once per tick, so message floods never starve timers
 					r.dirty = false
 				}
+			case su := <-r.semInbox:
+				r.drainCore() // core always first
+				r.handleSemantic(su)
+				r.processSemanticBatch(r.cfg.SemanticBudget - 1)
 			}
 		}
 	}()
 }
+
+// drainCore handles every core routing message currently queued, without
+// blocking. It is called before any semantic work so core routing is never
+// starved.
+func (r *Router) drainCore() {
+	for {
+		select {
+		case e := <-r.inbox:
+			r.handle(e)
+		default:
+			return
+		}
+	}
+}
+
+// processSemanticBatch applies up to n queued semantic updates, without blocking.
+func (r *Router) processSemanticBatch(n int) {
+	for i := 0; i < n; i++ {
+		select {
+		case su := <-r.semInbox:
+			r.handleSemantic(su)
+		default:
+			return
+		}
+	}
+}
+
+// handleSemantic applies one SemanticUpdate: it dampens each Opaque LSA (keeps
+// only newer instances) into a store that is SEPARATE from the topology LSDB and
+// never feeds the IP shortest-path computation — so semantic churn cannot
+// trigger an IP SPF run or delay IP convergence (ADR-0005).
+func (r *Router) handleSemantic(su packet.SemanticUpdate) {
+	for _, blob := range su.Blobs {
+		h, err := packet.DecodeHeader(blob)
+		if err != nil {
+			continue
+		}
+		ot, oid := packet.SplitLinkStateID(h.ID)
+		k := semKey{opaqueType: ot, advRouter: h.AdvRouter, opaqueID: oid}
+		if cur, ok := r.semDB[k]; ok && h.SeqNum <= cur {
+			continue // not newer: dampen (no re-flood, no work)
+		}
+		r.semDB[k] = h.SeqNum
+		atomic.AddUint64(&r.semProcessed, 1)
+	}
+}
+
+// SemProcessed returns how many semantic updates have been applied (for metrics
+// and tests).
+func (r *Router) SemProcessed() uint64 { return atomic.LoadUint64(&r.semProcessed) }
+
+// SemLen returns the number of distinct semantic LSAs held.
+func (r *Router) SemLen() int { return len(r.semDB) }
 
 // ---- origination ----
 

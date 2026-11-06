@@ -49,3 +49,12 @@ type LinkStateUpdate struct {
 type LinkStateAck struct {
 	Headers []LSAHeader
 }
+
+// SemanticUpdate carries experimental semantic Opaque LSAs (capability, trust,
+// telemetry, policy, summary) as raw encoded blobs. It is deliberately a
+// *separate* message type from the core LSU so a router can process it at lower
+// priority and under a budget, keeping semantic churn off the critical path of
+// IP routing (ADR-0005).
+type SemanticUpdate struct {
+	Blobs [][]byte
+}
