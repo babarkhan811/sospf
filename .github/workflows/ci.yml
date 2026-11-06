@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: vet
+        run: go vet ./...
+      - name: staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          staticcheck ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+      - name: test (race)
+        run: go test -race ./... -count=1
+        env:
+          CGO_ENABLED: '1'
+      - name: fuzz smoke
+        run: |
+          go test ./internal/packet/   -run=^$ -fuzz=FuzzDecodeRouterLSA   -fuzztime=10s
+          go test ./internal/packet/   -run=^$ -fuzz=FuzzDecodeTLVs        -fuzztime=10s
+          go test ./internal/packet/   -run=^$ -fuzz=FuzzDecodeOpaque      -fuzztime=10s
+          go test ./internal/semantic/ -run=^$ -fuzz=FuzzDecodeCapabilityLSA -fuzztime=10s

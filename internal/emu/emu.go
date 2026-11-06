@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/babarkhan811/sospf/internal/spf"
+
 	"github.com/babarkhan811/sospf/internal/node"
 	"github.com/babarkhan811/sospf/internal/packet"
 )
@@ -167,41 +169,40 @@ func Build(cfg node.Config, t *Topo) *Emulator {
 	return e
 }
 
-// WaitStable blocks until every router holds exactly wantLSAs LSAs and routing
-// tables are unchanged across two polls, or until timeout. It reports success.
+// WaitStable blocks until the network has fully converged: every router holds
+// wantLSAs LSAs AND has a route to every other router (not just its own stub),
+// held across two consecutive polls. It reports success before the timeout.
 func (e *Emulator) WaitStable(wantLSAs int, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
-	prev := map[uint32]int{}
 	stableRounds := 0
 	for time.Now().Before(deadline) {
-		ok := true
-		cur := map[uint32]int{}
-		for id, r := range e.Routers() {
-			if r.DBLen() != wantLSAs {
-				ok = false
-			}
-			cur[id] = len(r.Table())
-		}
-		if ok && sameCounts(prev, cur) {
+		if e.fullyConverged(wantLSAs) {
 			stableRounds++
-			if stableRounds >= 3 {
+			if stableRounds >= 2 {
 				return true
 			}
 		} else {
 			stableRounds = 0
 		}
-		prev = cur
 		time.Sleep(5 * time.Millisecond)
 	}
 	return false
 }
 
-func sameCounts(a, b map[uint32]int) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, v := range a {
-		if b[k] != v {
+// fullyConverged reports whether every router holds wantLSAs LSAs and has a
+// route to each of the other wantLSAs-1 routers.
+func (e *Emulator) fullyConverged(wantLSAs int) bool {
+	for _, r := range e.Routers() {
+		if r.DBLen() != wantLSAs {
+			return false
+		}
+		routerRoutes := 0
+		for d := range r.Table() {
+			if d.Kind == spf.DestRouter {
+				routerRoutes++
+			}
+		}
+		if routerRoutes != wantLSAs-1 {
 			return false
 		}
 	}

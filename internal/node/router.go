@@ -24,7 +24,11 @@ type Config struct {
 
 // DefaultConfig returns emulator-friendly timers.
 func DefaultConfig() Config {
-	return Config{HelloInterval: 10 * time.Millisecond, DeadInterval: 60 * time.Millisecond, InboxCap: 8192}
+	// Dead interval is a generous multiple of the hello interval so that
+	// transient processing lag under a flooding storm does not trip a false
+	// dead-neighbor detection (which would churn re-origination and prevent
+	// convergence at scale).
+	return Config{HelloInterval: 15 * time.Millisecond, DeadInterval: 1000 * time.Millisecond, InboxCap: 65536}
 }
 
 type neighbor struct {
@@ -58,9 +62,10 @@ type Router struct {
 	db        *lsdb.DB
 	selfSeq   int32
 
-	mu    sync.RWMutex
-	table map[spf.Dest]spf.Route
-	dirty bool
+	mu       sync.RWMutex
+	table    map[spf.Dest]spf.Route
+	dirty    bool
+	syncTick int
 
 	started bool
 }
@@ -91,8 +96,18 @@ func (r *Router) AddLink(id uint32, metric uint16) {
 // SetSend installs the transport's send function.
 func (r *Router) SetSend(f func(to uint32, msg any)) { r.send = f }
 
-// Deliver hands an inbound message to this router (called by the transport).
-func (r *Router) Deliver(from uint32, msg any) { r.inbox <- envelope{from: from, msg: msg} }
+// Deliver hands an inbound message to this router (called by the transport). It
+// never blocks the caller: if the inbox is momentarily full it completes the
+// send on a short-lived goroutine, so two routers flooding to each other can
+// never deadlock. Reordering is acceptable — OSPF flooding tolerates it.
+func (r *Router) Deliver(from uint32, msg any) {
+	e := envelope{from: from, msg: msg}
+	select {
+	case r.inbox <- e:
+	default:
+		go func() { r.inbox <- e }()
+	}
+}
 
 // Start runs the router until ctx is cancelled.
 func (r *Router) Start(ctx context.Context) {
@@ -110,32 +125,22 @@ func (r *Router) Start(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case e := <-r.inbox:
-				r.handle(e)
-				r.drainAndRecompute()
+				r.handle(e) // sets r.dirty; SPF is debounced to the maint tick
 			case <-hello.C:
 				r.sendHellos()
 			case <-maint.C:
 				r.checkDead()
+				r.syncTick++
+				if r.syncTick%20 == 0 {
+					r.antiEntropy() // periodic full-LSDB sync closes any flooding gap
+				}
+				if r.dirty {
+					r.recompute() // at most once per tick, so message floods never starve timers
+					r.dirty = false
+				}
 			}
 		}
 	}()
-}
-
-// drainAndRecompute processes any already-queued messages, then runs SPF once if
-// the database changed — a minimal SPF throttle (brief §5.1).
-func (r *Router) drainAndRecompute() {
-	for {
-		select {
-		case e := <-r.inbox:
-			r.handle(e)
-		default:
-			if r.dirty {
-				r.recompute()
-				r.dirty = false
-			}
-			return
-		}
-	}
 }
 
 // ---- origination ----
@@ -306,6 +311,23 @@ func (r *Router) flood(lsa *packet.RouterLSA, except uint32) {
 			continue
 		}
 		r.send(n.id, packet.LinkStateUpdate{Routers: []*packet.RouterLSA{lsa}})
+	}
+}
+
+// antiEntropy re-floods the whole database to every adjacent neighbor. Receivers
+// install only newer instances (and so do not re-flood), making this idempotent
+// after convergence; it exists to repair any LSA a neighbor missed under
+// message reordering, guaranteeing eventual completeness without a per-neighbor
+// retransmission list (that optimization lands with the real transport).
+func (r *Router) antiEntropy() {
+	lsas := r.db.All(time.Now())
+	if len(lsas) == 0 {
+		return
+	}
+	for _, n := range r.neighbors {
+		if fsm.IsAdjacent(n.state) {
+			r.send(n.id, packet.LinkStateUpdate{Routers: lsas})
+		}
 	}
 }
 

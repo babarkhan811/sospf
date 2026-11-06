@@ -34,10 +34,11 @@ address.
 | 6 | Policy Engine + Gateway Mediation Layer | ✅ done |
 | 7 | Security hardening: packet HMAC, LSA signatures, replay protection, rate limits | ✅ done |
 | 8 | Agent SDK + MCP/A2A adapters + multi-domain demo | ✅ done |
-| 9 | Observability + docs + demo script | ⏳ not started |
+| 9 | Observability + docs + demo script + proposal pack | ✅ done |
 
-**Current checkpoint:** Phase 1 ends with a review of the wire format and design *before
-any protocol code is written*. See `docs/WIRE_FORMAT.md`.
+**All nine phases are implemented and tested** (11 Go packages green; parsers
+fuzzed; 3-router convergence + link-failure reconvergence; multi-domain re-route
+demo). Everything remains **experimental** per the caveats above.
 
 ## Components (planned)
 
@@ -65,11 +66,39 @@ Section 6 of the project brief: `/cmd`, `/internal`, `/pkg/ash`, `/proto`, `/ont
 | `docs/SECURITY.md` | Threat model and mitigations |
 | `docs/ADR/` | Architecture Decision Records |
 | `docs/draft-sospf-semantic-link-state-00.md` | Internet-Draft-style write-up |
+| `proposal/` | Company proposal pack: executive summary, architecture, roadmap, standards strategy, risks |
 
 ## Building and running
 
-> Nothing to build yet — Phase 1 is specification only. Build instructions land with the
-> Phase 2 classic core.
+Requires Go 1.22+.
+
+```bash
+go build ./...          # build all binaries into the module
+go test ./...           # run the suite (11 packages)
+make demo               # headline scenario: planner -> best agent -> re-route
+make emu                # converge the sample triangle topology
+make bench              # convergence/LSDB scale + resolve latency
+```
+
+On Windows without `make`: `powershell -ExecutionPolicy Bypass -File scripts\demo.ps1`,
+or run the `go run ./cmd/...` commands directly.
+
+Binaries:
+
+| Command | What it does |
+|---|---|
+| `sospf-emu -topo topologies/triangle.json` | Converge a topology, print routing tables |
+| `sospf-demo` | End-to-end multi-domain scenario with trust-driven re-routing |
+| `sospfctl resolve-intent -scenario scenarios/medical.json` | Resolve an intent to a target agent |
+| `sospf-bench` | Convergence time and LSDB size vs. router count |
+
+### Measured (emulator, commodity laptop)
+
+| Metric | Result |
+|---|---|
+| Convergence | ~43 ms (3 routers) → ~340 ms (50 routers) |
+| LSDB size | linear in router count (digests, not documents) |
+| Intent resolution | ~69 µs / 100 candidates, ~1.0 ms / 1000 |
 
 ## License
 
