@@ -40,3 +40,8 @@ Thumbs.db
 *.key
 /keys/
 local.env
+
+# Python SDK
+__pycache__/
+*.pyc
+sdk/python/py-scenario.json
