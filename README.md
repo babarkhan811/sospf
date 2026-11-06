@@ -32,7 +32,7 @@ address.
 | 4 | Semantic resolution + Semantic Forwarding Table + `sospfctl resolve-intent` | ✅ done |
 | 5 | Trust LSA, Telemetry LSA, Trust Manager, dampening | ✅ done |
 | 6 | Policy Engine + Gateway Mediation Layer | ✅ done |
-| 7 | Security hardening: packet HMAC, LSA signatures, replay protection, rate limits | ⏳ not started |
+| 7 | Security hardening: packet HMAC, LSA signatures, replay protection, rate limits | ✅ done |
 | 8 | Agent SDK + MCP/A2A adapters + multi-domain demo | ⏳ not started |
 | 9 | Observability + docs + demo script | ⏳ not started |
 
