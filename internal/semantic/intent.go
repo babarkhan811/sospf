@@ -23,8 +23,10 @@ type Constraints struct {
 	CostCeiling     float64  // 0 = unlimited (applies to composite cost)
 }
 
-// required returns the capability IRIs the intent needs: the explicit list, or
+// Required returns the capability IRIs the intent needs: the explicit list, or
 // the task-type IRI if the list is empty.
+func (iv IntentVector) Required() []string { return iv.required() }
+
 func (iv IntentVector) required() []string {
 	if len(iv.RequiredCapabilities) > 0 {
 		return iv.RequiredCapabilities
