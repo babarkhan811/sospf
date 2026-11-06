@@ -28,7 +28,7 @@ address.
 |---|---|---|
 | 1 | Research & spec: `SPEC_NOTES`, `TRACEABILITY`, `WIRE_FORMAT`, ADRs | ✅ done |
 | 2 | Classic OSPF core: packets, FSMs, LSDB, flooding, SPF (plain prefixes) | ✅ done |
-| 3 | Opaque LSA framework + Agent Capability LSA + Semantic Prefixes + ABR summary | ⏳ not started |
+| 3 | Opaque LSA framework + Agent Capability LSA + Semantic Prefixes + ABR summary | ✅ done |
 | 4 | Semantic resolution + Semantic Forwarding Table + `sospfctl resolve-intent` | ⏳ not started |
 | 5 | Trust LSA, Telemetry LSA, Trust Manager, dampening | ⏳ not started |
 | 6 | Policy Engine + Gateway Mediation Layer | ⏳ not started |
