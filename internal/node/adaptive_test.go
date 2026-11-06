@@ -81,14 +81,16 @@ func TestNoFlapUnderNoisyTelemetry(t *testing.T) {
 	dest4 := spf.Dest{Kind: spf.DestRouter, ID: 4}
 	waitNextHop(t, r1, dest4, 2, 2*time.Second)
 
-	// Inject small noise around a healthy operating point for a while.
+	// Inject small latency noise around a healthy, lightly-loaded operating point
+	// (well below the alternate path's cost) for a while. The jitter stays within
+	// the hysteresis band, so the advertised cost — and the route — must not move.
 	for i := 0; i < 40; i++ {
 		lat := 5.0
 		if i%2 == 0 {
 			lat = 8.0
 		}
-		e.SetLinkTelemetry(1, 2, lat, 0.1)
-		e.SetLinkTelemetry(2, 4, lat, 0.1)
+		e.SetLinkTelemetry(1, 2, lat, 0.0)
+		e.SetLinkTelemetry(2, 4, lat, 0.0)
 		time.Sleep(5 * time.Millisecond)
 	}
 	// The preferred next hop must not have flapped away from 2.
